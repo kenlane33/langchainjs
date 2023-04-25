@@ -79,7 +79,7 @@ function isObject(item: JsonObj): item is JsonObj {
 }
 
 
-function mergeDeep(target: JsonObj, ...sources: JsonObj[]): JsonObj {
+function mergeDeepOld(target: JsonObj, ...sources: JsonObj[]): JsonObj {
   if (!sources.length) return target;
   const source = sources.shift();
 
@@ -91,17 +91,16 @@ function mergeDeep(target: JsonObj, ...sources: JsonObj[]): JsonObj {
         } else {          
           target[key] = { ...(target[key] as JsonObj)}
         }
-        mergeDeep(target[key] as JsonObj, source[key] as JsonObj);
+        mergeDeepOld(target[key] as JsonObj, source[key] as JsonObj);
       } else {
         Object.assign(target, { [key]: source[key] });
       }
     })
   }
-
-  return mergeDeep(target, ...sources);
+  return mergeDeepOld(target, ...sources);
 }
 
-function mergeDeep2(target: JsonObj, ...sources: JsonObj[]): JsonObj {
+function mergeDeep(target: JsonObj, ...sources: JsonObj[]): JsonObj {
   return _mergeDeep(false, target, ...sources)
 }
 function mergeDeepNoStomp(target: JsonObj, ...sources: JsonObj[]): JsonObj {
@@ -129,22 +128,19 @@ const a = {a:888, b:{u:222,v:7}}
 const b = {a:8, c:{p:1,q:1}}
 const c = {b:{u:2}}
 const jj = (obj:JsonObj) => JSON.parse(JSON.stringify(obj))
-console.log(mergeDeep2(jj(a), jj(b), jj(c))       )
+console.log(mergeDeep(jj(a), jj(b), jj(c))       )
 console.log(mergeDeepNoStomp(a, b, c)          )
-
-
-
 
 type Patch = {
   match: JsonObj,
   patch: JsonObj
 }
 
-function patchObjsForPathMatches(target: JsonObj, ifMatchPatches: Patch[]): JsonObj {
-  for (const { match, patch } of ifMatchPatches) {
+function patchObjsForPathMatches(target: JsonObj, matchesToPatch: Patch[]): JsonObj {
+  for (const { match, patch } of matchesToPatch) {
     const matchedObj = findObjMatchInsideObj(target, match);
     if (matchedObj) {
-      target = mergeDeep(matchedObj, patch, JSON.parse(JSON.stringify(target)));
+      target = mergeDeepNoStomp(matchedObj, patch, JSON.parse(JSON.stringify(target)));
       // target = mergeDeep(matchedObj, patch, target);
     }
   }
@@ -152,20 +148,45 @@ function patchObjsForPathMatches(target: JsonObj, ifMatchPatches: Patch[]): Json
 }
 
 function findObjMatchInsideObj(obj: JsonObj, match: JsonObj): JsonObj | null {
-  const matchKeys = Object.keys(match);
+  const matchKeys = Object.keys(match) //= 
+  if (matchKeys.length === 0) return obj // lets you match an empty object to any object
   const matchedObj = Object.entries(obj).find(([key, value]) => {
-    if (matchKeys.includes(key)) {
+    if (matchKeys.includes(key)) { 
+      const matchVal = match[key] //=
       if (typeof value === 'object' && value !== null) {
-        return findObjMatchInsideObj(value as JsonObj, match[key] as JsonObj);
+        return findObjMatchInsideObj(value as JsonObj, matchVal as JsonObj) //= matchVal
       }
-      return value === match[key];
+      return (matchVal === '*') || (value === matchVal) //= matchVal
     }
-    return false;
-  });
+    return false
+  })
   return matchedObj ? obj : null;
 }
-const ifMatchPatches = [{match: { llm: {model_name: "text-davinci-003"}}, patch: {a:777, llm:{_type:"openai", z:555}}}]
-patchObjsForPathMatches(        { llm: {model_name: "text-davinci-003"}, a:7}, ifMatchPatches) //=
+const matchesToPatch = [
+  { match: {}, 
+    patch: {memory: null, verbose: false, output_key: 'answer'}
+  },
+  { match: {llm:{model_name: "text-davinci-003"}}, 
+    patch: {llm:{_type: 'openai'}}
+  },
+  { match: {llm:{_type: 'openai'} }, 
+    patch: {llm:{
+      temperature: 0.0, // max_tokens: 256, top_p: 1, frequency_penalty: 0, 
+      // presence_penalty: 0, n: 1, best_of: 1, request_timeout: null, logit_bias: {},
+    }},
+  },
+  { match: {prompt:{template:'*'} }, 
+    patch: {prompt:{
+      "output_parser": null,
+      "template_format": "f-string",
+      "_type": "prompt"
+    }},
+  }
+] as Patch[]
+patchObjsForPathMatches(
+  { llm: {model_name: "text-davinci-003"}, prompt:{'template':'XX'}}, 
+  matchesToPatch
+) //=
 
 // test deNoise and reNoise
 const noisyJson = JSON.parse(` 
@@ -250,7 +271,7 @@ const [signalJson, defaultsStore] = deNoiseDefaultsByPath(noisyJson, [
   'output_key', 
   'prompt.template', 
   ]);
-console.log(signalJson); //= signalJson
+console.log(signalJson);
 console.log(defaultsStore); //= defaultsStore
 const noisyJson2 = reNoise(signalJson, defaultsStore); //= noisyJson 
 console.log(noisyJson2); 
