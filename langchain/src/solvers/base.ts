@@ -1,103 +1,12 @@
 /* eslint-disable no-param-reassign */
-type JsonyObj = {[key: string]: JsonyObj | JsonyObj[] | string;}
-
-interface DefaultsStore {
-  [lookupPath: string]: {
-    [defaultKey: string]: string;
-  };
-}
-
-export function deNoise(noisyJson: JsonyObj, keepPaths:string[]): [signalJson: JsonyObj, defaultsStore: DefaultsStore] {
-  const defaultsStore: DefaultsStore = {};
-
-  function removeNoisyDefaults(obj: JsonyObj, path: string[] = []): JsonyObj {
-    const res = Object.entries(obj).reduce((newObj, [key, value]) => {
-      const lookupPath = path.concat(key).join('.'); //=
-      const defaults = defaultsStore[lookupPath] || {};
-      const defaultValue = defaults[key];
-  
-      if (Array.isArray(value) && (typeof value !== 'string')) {
-        newObj[key] = value.map((item, index) => removeNoisyDefaults(item, [...path, key, index.toString()]));
-      } else if (typeof value === 'object' && value !== null) {
-        newObj[key] = removeNoisyDefaults(value, [...path, key]);
-      } else if (defaultValue === value) {
-        delete defaults[key]; 
-  
-        if (Object.keys(defaults).length === 0) {
-          delete defaultsStore[lookupPath];
-        }
-      } else if (keepPaths.includes(lookupPath)) {
-        newObj[key] = value; 
-      } else {
-        const store = defaultsStore[lookupPath] || {};
-        defaultsStore[lookupPath] = { ...store, [key]: value };
-        
-      }           
-  
-      return newObj; //=
-    }, {} as JsonyObj);
-    return res //= 
-  }
-
-  const signalJson = removeNoisyDefaults(noisyJson);
-
-  return [signalJson, defaultsStore];
-}
-
-export function reNoise(signalJson: JsonyObj, defaultsStore: DefaultsStore): JsonyObj {
-  function restoreNoisyDefaults(obj: JsonyObj, path: string[] = []): JsonyObj {
-    return Object.entries(obj).reduce((newObj, [key, value]) => {
-      const lookupPath = path.concat(key).join('.'); //=
-      const defaults = defaultsStore[lookupPath] || {};
-      const defaultValue = defaults[key];
-
-      if (Array.isArray(value)) {
-        newObj[key] = value.map((item, index) => restoreNoisyDefaults(item, [...path, key, index.toString()]));
-      } else if (defaultValue !== undefined) {
-        newObj[key] = defaultValue;
-      } else if (typeof value === 'object' && value !== null) {
-        newObj[key] = restoreNoisyDefaults(value, [...path, key]);
-      } else {
-        newObj[key] = value;
-      }
-
-      return newObj;
-    }, {} as JsonyObj);
-  }
-
-  const noisyJson = restoreNoisyDefaults(signalJson);
-
-  return noisyJson;
-}
 
 type JsonValue = string | number | boolean | null;
 interface JsonObj {[key: string]: JsonValue | JsonArray | JsonObj;}
-type JsonArray = Array<JsonObj>
+type JsonArray = Array<JsonObj|JsonValue>
 
-function isObject(item: JsonObj): item is JsonObj {
-  return (item && typeof item === 'object' && !Array.isArray(item));
-}
-
-
-function mergeDeepOld(target: JsonObj, ...sources: JsonObj[]): JsonObj {
-  if (!sources.length) return target;
-  const source = sources.shift();
-
-  if (isObject(target) && source && isObject(source)) {    
-    Object.keys(source).forEach( key => {
-      if (isObject(source[key] as JsonObj)) {
-        if (!target[key]) { 
-          Object.assign(target, { [key]: {} });
-        } else {          
-          target[key] = { ...(target[key] as JsonObj)}
-        }
-        mergeDeepOld(target[key] as JsonObj, source[key] as JsonObj);
-      } else {
-        Object.assign(target, { [key]: source[key] });
-      }
-    })
-  }
-  return mergeDeepOld(target, ...sources);
+function isObject(item: JsonObj|JsonArray|JsonValue): boolean {
+  if (item===null || item === undefined) return false
+  return (typeof item === 'object' && !Array.isArray(item))
 }
 
 function _mergeDeep(canStomp:boolean, target: JsonObj, ...sources: JsonObj[]): JsonObj {
@@ -127,36 +36,86 @@ const a = {a:888, b:{u:222,v:7}}
 const b = {a:8, c:{p:1,q:1}}
 const c = {b:{u:2}}
 const jj = (obj:JsonObj) => JSON.parse(JSON.stringify(obj))
-console.log(mergeDeep(jj(a), jj(b), jj(c))       )
-console.log(mergeDeepNoStomp(a, b, c)          )
+console.log(mergeDeep(jj(a), jj(b), jj(c))       ) 
+console.log(mergeDeepNoStomp(a, b, c)          )   
 
 type Patch = {match: JsonObj, patch: JsonObj}
 
+// type FullPatchFunc = (obj:JsonObj, key:string, val:JsonValue, match:JsonObj, patch:JsonObj, funcParams: JsonObj) => JsonObj
+type PatchFunc     = (val:JsonValue, funcParams?:JsonObj) => (JsonValue | JsonArray)
+
+function handlebars_to_array(val: JsonValue) : (JsonValue | JsonArray) {
+  if (typeof val === 'string') {
+    const matches = val.matchAll(/{{\s*([a-zA-Z0-9_]+)\s*}}/g)
+    return [...matches].map(m => m[1])
+  }
+  return `%%${val}`
+}
+function yay_it(val: JsonValue, funcParams: JsonObj) : (JsonValue | JsonArray) {
+  return `YAY! ${JSON.stringify(funcParams)}`
+}
+const patchFuncs = {
+  handlebars_to_array,
+  yay_it
+} as {[key:string]: PatchFunc}
+// TODO: add a transform function to the patchObjMatches function
+
+function parseFuncAndJsonParams( str:string ) : [PatchFunc|null, JsonObj] {
+  const funcName   = str.match(/^[a-zA-Z0-9_]+/)?.[0]
+  const jsonParams = str.match(/\((.*)\)/)?.[1] || '{}'
+  const func       = funcName && patchFuncs[funcName] || null
+  return [func, JSON.parse(jsonParams)]
+}
+parseFuncAndJsonParams('handlebars_to_array({"a":1,"b":{"c":2}})') //=
+patchFuncs.handlebars_to_array('hello {{world}}. Aloha to {{Hawaii}}') //=
+
+function applyPatchFuncs(patch: JsonObj, matchVal: JsonValue): JsonObj {
+
+  function digForFuncs(obj: JsonObj, parentObj?: JsonObj, parentKey?: string) {
+    Object.entries(obj).forEach(([key, val]) => {
+      if (key==='__patchFunc') {
+        const [func, jsonParams] = parseFuncAndJsonParams(val as string)
+        if (func && parentObj && parentKey) { 
+          parentObj[parentKey] = func(matchVal, jsonParams)
+        }
+      }
+      else if (isObject(val)) digForFuncs(val as JsonObj, obj, key)
+    })
+  }
+  digForFuncs(patch) 
+  return patch
+}
+
 function patchObjMatches(obj: JsonObj, matchesToPatch: Patch[]): JsonObj {
   for (const { match, patch } of matchesToPatch) {
-    const matchedObj = findObjMatch(obj, match);
-    if (matchedObj) {
-      obj = mergeDeepNoStomp(matchedObj, patch, JSON.parse(JSON.stringify(obj)));
-      // target = mergeDeep(matchedObj, patch, target);
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const [matchObj,_matchKey,matchVal] = findObjMatch(obj, match)
+    if (matchObj) {
+      const patch2 = applyPatchFuncs(patch, matchVal) //=
+      obj = mergeDeepNoStomp(matchObj, patch2, JSON.parse(JSON.stringify(obj)));
     }
   }
   return obj;
 }
 
-function findObjMatch(obj: JsonObj, match: JsonObj): JsonObj | null {
-  const matchKeys = Object.keys(match) //= 
-  if (matchKeys.length === 0) return obj // lets you match an empty object to any object
-  const matchedObj = Object.entries(obj).find(([key, value]) => {
+function findObjMatch(obj: JsonObj, match: JsonObj): [JsonObj | null, string | null,JsonValue] {
+  const matchKeys = Object.keys(match) 
+  if (matchKeys.length === 0) return [obj,null,null] // lets you match an empty object to any object
+  let matchKey = null
+  let matchVal = null
+  const matchObj = Object.entries(obj).find(([key, value]) => {
     if (matchKeys.includes(key)) { 
-      const matchVal = match[key] //=
+      const valToMatch = match[key]
       if (typeof value === 'object' && value !== null) {
-        return findObjMatch(value as JsonObj, matchVal as JsonObj) //= matchVal
+        return findObjMatch(value as JsonObj, valToMatch as JsonObj)
       }
-      return (matchVal === '*') || (value === matchVal) //= matchVal
+      matchKey = key   
+      matchVal = value
+      return (valToMatch === '*') || (value === valToMatch)
     }
     return false
   })
-  return matchedObj ? obj : null;
+  return matchObj ? [obj, matchKey, matchVal] : [null,null,null]
 }
 
 const matchesToPatch = [
@@ -177,112 +136,47 @@ const matchesToPatch = [
       output_parser: null,
       template_format: 'f-string',
       _type: 'prompt',
-      input_variables: {_transformFn:'handlebars_to_array()' },
+      input_variables: { __patchFunc:'handlebars_to_array()' },
+      tester: { __patchFunc:'yay_it({"foo":"boo"})' },
     }},
   }
 ] as Patch[]
 patchObjMatches(
-  { llm: {model_name: "text-davinci-003"}, prompt:{'template':'XX'}}, 
+  { llm: {model_name: "text-davinci-003"}, prompt:{'template':'Answer questions as table rows, Q1:{q1}, Q2:{q2}, Q3:{q3}' }},
   matchesToPatch
-) //=
+) //= 
 
-function handlebars_to_array(val: JsonValue) {
-  if (typeof val === 'string') {
-    const matches = val.matchAll(/{{\s*([a-zA-Z0-9_]+)\s*}}/g)
-    return [...matches].map(m => m[1])
-  }
-  return val
-}
-const transformFns = {
-  handlebars_to_array
-} as {[key:string]: (val:JsonValue) => JsonValue}
-
-// TODO: add a transform function to the patchObjMatches function
+export function BaseSolver() {}
+export function SolverInputs() {}
 
 // test deNoise and reNoise
-const noisyJson = JSON.parse(` 
-{
-  "memory": null,
-  "verbose": true,
-  "llm": {
-      "model_name": "text-davinci-003",
-      "temperature": 0.0,
-      "max_tokens": 256,
-      "top_p": 1,
-      "frequency_penalty": 0,
-      "presence_penalty": 0,
-      "n": 1,
-      "best_of": 1,
-      "request_timeout": null,
-      "logit_bias": {},
-      "_type": "openai"
-  },
-  "input_key": "question",
-  "output_key": "answer",
-  "prompt": {
-      "input_variables": [
-          "question"
-      ],
-      "output_parser": null,
-      "template": "If someone asks you to perform a task, your job is to come up with a series of bash commands that will perform the task. There is no need to put \\"#!/bin/bash\\" in your answer. Make sure to reason step by step, using this format:\\n\\nQuestion: \\"copy the files in the directory named 'target' into a new directory at the same level as target called 'myNewDirectory'\\"\\n\\nI need to take the following actions:\\n- List all files in the directory\\n- Create a new directory\\n- Copy the files from the first directory into the second directory\\n\`\`\`bash\\nls\\nmkdir myNewDirectory\\ncp -r target/* myNewDirectory\\n\`\`\`\\n\\nThat is the format. Begin!\\n\\nQuestion: {question}",
-      "template_format": "f-string",
-      "_type": "prompt"
-  },
-  "_type": "llm_bash_chain"
-}`)
-function deNoiseDefaultsByPath(obj: JsonyObj, pathsToKeep: string[]): [signalJson: JsonyObj, defaultsStore: DefaultsStore] {
-  const defaultsStore: DefaultsStore = {};
-
-  function removeNoisyDefaults(obj: JsonyObj, path: string[] = []): JsonyObj {
-    const newObj: JsonyObj = {};
-
-    for (const [key, value] of Object.entries(obj)) {
-      const newPath = [...path, key];
-      const lookupPath = newPath.join('.');
-      const shouldKeepPath = pathsToKeep.some((pathToKeep) => lookupPath.startsWith(pathToKeep));
-
-      if (shouldKeepPath) {
-        newObj[key] = value;
-        continue;
-      }
-
-      const store = defaultsStore[lookupPath] || {};
-      if (Array.isArray(value)) {
-        newObj[key] = value.map((item, index) => removeNoisyDefaults(item, [...newPath, index.toString()]));
-      } else if (typeof value === 'object' && value !== null) {
-        newObj[key] = removeNoisyDefaults(value, newPath);
-      } else if (store[key] === value) {
-        delete store[key];
-
-        if (Object.keys(store).length === 0) {
-          delete defaultsStore[lookupPath];
-        }
-      } else {
-        store[key] = value;
-      }
-    }
-
-    return newObj;
-  }
-
-  const signalJson = removeNoisyDefaults(obj);
-
-  return [signalJson, defaultsStore];
-}
-// const [signalJson, defaultsStore] = deNoise(noisyJson, ['llm.model_name', 'llm.temperature', 'llm.max_tokens', 'llm.top_p', 'llm.frequency_penalty', 'llm.presence_penalty', 'llm.n', 'llm.best_of', 'llm.request_timeout', 'llm.logit_bias', 'input_key', 'output_key', 'prompt.input_variables', 'prompt.output_parser', 'prompt.template', 'prompt.template_format']);
-// const [signalJson, defaultsStore] = deNoise(noisyJson, [
-//   'llm.model_name', 
-//   'llm._type', 
-//   'output_key', 
-//   'prompt.template', 
-//   ]);
-const [signalJson, defaultsStore] = deNoiseDefaultsByPath(noisyJson, [
-  'llm.model_name', 
-  'llm._type', 
-  'output_key', 
-  'prompt.template', 
-  ]);
-console.log(signalJson);
-console.log(defaultsStore); //= defaultsStore
-const noisyJson2 = reNoise(signalJson, defaultsStore); //= noisyJson 
-console.log(noisyJson2); 
+// const noisyJson = JSON.parse(` 
+// {
+//   "memory": null,
+//   "verbose": true,
+//   "llm": {
+//       "model_name": "text-davinci-003",
+//       "temperature": 0.0,
+//       "max_tokens": 256,
+//       "top_p": 1,
+//       "frequency_penalty": 0,
+//       "presence_penalty": 0,
+//       "n": 1,
+//       "best_of": 1,
+//       "request_timeout": null,
+//       "logit_bias": {},
+//       "_type": "openai"
+//   },
+//   "input_key": "question",
+//   "output_key": "answer",
+//   "prompt": {
+//       "input_variables": [
+//           "question"
+//       ],
+//       "output_parser": null,
+//       "template": "If someone asks you to perform a task, your job is to come up with a series of bash commands that will perform the task. There is no need to put \\"#!/bin/bash\\" in your answer. Make sure to reason step by step, using this format:\\n\\nQuestion: \\"copy the files in the directory named 'target' into a new directory at the same level as target called 'myNewDirectory'\\"\\n\\nI need to take the following actions:\\n- List all files in the directory\\n- Create a new directory\\n- Copy the files from the first directory into the second directory\\n\`\`\`bash\\nls\\nmkdir myNewDirectory\\ncp -r target/* myNewDirectory\\n\`\`\`\\n\\nThat is the format. Begin!\\n\\nQuestion: {question}",
+//       "template_format": "f-string",
+//       "_type": "prompt"
+//   },
+//   "_type": "llm_bash_chain"
+// }`)
