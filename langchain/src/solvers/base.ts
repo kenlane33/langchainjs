@@ -1,12 +1,19 @@
 /* eslint-disable no-param-reassign */
+// import { isObject } from "./isObject";
+// import { JsonObj, JsonValue, JsonArray } from "./JsonObj";
+// import { mergeDeep, mergeDeepNoStomp } from "./mergeDeep";
+export function BaseSolver() {}
+export function SolverInputs() {}
 
 type JsonValue = string | number | boolean | null;
-interface JsonObj {[key: string]: JsonValue | JsonArray | JsonObj;}
-type JsonArray = Array<JsonObj|JsonValue>
-
-function isObject(item: JsonObj|JsonArray|JsonValue): boolean {
-  if (item===null || item === undefined) return false
-  return (typeof item === 'object' && !Array.isArray(item))
+interface JsonObj {
+  [key: string]: JsonValue | JsonArray | JsonObj;
+}
+type JsonArray = Array<JsonObj | JsonValue>;
+function isObject(item: JsonObj | JsonArray | JsonValue): boolean {
+  if (item === null || item === undefined)
+    return false;
+  return (typeof item === 'object' && !Array.isArray(item));
 }
 
 function _mergeDeep(canStomp:boolean, target: JsonObj, ...sources: JsonObj[]): JsonObj {
@@ -28,6 +35,7 @@ function _mergeDeep(canStomp:boolean, target: JsonObj, ...sources: JsonObj[]): J
 function mergeDeep(target: JsonObj, ...sources: JsonObj[]): JsonObj {
   return _mergeDeep(true, target, ...sources)
 }
+
 function mergeDeepNoStomp(target: JsonObj, ...sources: JsonObj[]): JsonObj {
   return _mergeDeep(false, target, ...sources)
 }
@@ -45,44 +53,47 @@ type Patch = {match: JsonObj, patch: JsonObj}
 type PatchFunc     = (val:JsonValue, funcParams?:JsonObj) => (JsonValue | JsonArray)
 
 function handlebars_to_array(val: JsonValue) : (JsonValue | JsonArray) {
+  console.log(typeof val,val)
   if (typeof val === 'string') {
     const matches = val.matchAll(/{{\s*([a-zA-Z0-9_]+)\s*}}/g)
-    return [...matches].map(m => m[1])
+    return [...matches].map(m => m[1]) //=
   }
-  return `%%${val}`
+  return `##${val}`
 }
 function yay_it(val: JsonValue, funcParams: JsonObj) : (JsonValue | JsonArray) {
-  return `YAY! ${JSON.stringify(funcParams)}`
+  return `YAY! ${JSON.stringify(funcParams)}  val was: ${JSON.stringify(val)}`
 }
 const patchFuncs = {
   handlebars_to_array,
   yay_it
-} as {[key:string]: PatchFunc}
+} as {[key:string]: PatchFunc|null}
 // TODO: add a transform function to the patchObjMatches function
 
 function parseFuncAndJsonParams( str:string ) : [PatchFunc|null, JsonObj] {
   const funcName   = str.match(/^[a-zA-Z0-9_]+/)?.[0]
   const jsonParams = str.match(/\((.*)\)/)?.[1] || '{}'
-  const func       = funcName && patchFuncs[funcName] || null
+  const func       = (funcName && patchFuncs[funcName]) || null //=
   return [func, JSON.parse(jsonParams)]
 }
-parseFuncAndJsonParams('handlebars_to_array({"a":1,"b":{"c":2}})') //=
-patchFuncs.handlebars_to_array('hello {{world}}. Aloha to {{Hawaii}}') //=
+// parseFuncAndJsonParams('handlebars_to_array({"a":1,"b":{"c":2}})') //=
+// patchFuncs.handlebars_to_array?.('hello {{world}}. Aloha to {{Hawaii}}') //=
 
 function applyPatchFuncs(patch: JsonObj, matchVal: JsonValue): JsonObj {
-
+  const mtchs = [] as [unknown, unknown, unknown, unknown, unknown, ][]
   function digForFuncs(obj: JsonObj, parentObj?: JsonObj, parentKey?: string) {
     Object.entries(obj).forEach(([key, val]) => {
       if (key==='__patchFunc') {
         const [func, jsonParams] = parseFuncAndJsonParams(val as string)
         if (func && parentObj && parentKey) { 
           parentObj[parentKey] = func(matchVal, jsonParams)
+          mtchs.push([func, parentObj[parentKey], parentObj, parentKey, matchVal])
         }
       }
       else if (isObject(val)) digForFuncs(val as JsonObj, obj, key)
     })
   }
   digForFuncs(patch) 
+  if (mtchs.length) console.log(mtchs)
   return patch
 }
 
@@ -91,32 +102,39 @@ function patchObjMatches(obj: JsonObj, matchesToPatch: Patch[]): JsonObj {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const [matchObj,_matchKey,matchVal] = findObjMatch(obj, match)
     if (matchObj) {
-      const patch2 = applyPatchFuncs(patch, matchVal) //=
+      const patch2 = applyPatchFuncs(patch, matchVal) //= matchVal
       obj = mergeDeepNoStomp(matchObj, patch2, JSON.parse(JSON.stringify(obj)));
     }
   }
   return obj;
 }
 
-function findObjMatch(obj: JsonObj, match: JsonObj): [JsonObj | null, string | null,JsonValue] {
-  const matchKeys = Object.keys(match) 
-  if (matchKeys.length === 0) return [obj,null,null] // lets you match an empty object to any object
-  let matchKey = null
-  let matchVal = null
+function findObjMatch(obj: JsonObj, match: JsonObj): [JsonObj | null, string | null, JsonValue] {
+  const matchKeys = Object.keys(match);
+  if (matchKeys.length === 0) return [obj, null, null]; // lets you match an empty object to any object
+  let matchKey = null;
+  let matchVal = null;
   const matchObj = Object.entries(obj).find(([key, value]) => {
-    if (matchKeys.includes(key)) { 
-      const valToMatch = match[key]
-      if (typeof value === 'object' && value !== null) {
-        return findObjMatch(value as JsonObj, valToMatch as JsonObj)
+    if (matchKeys.includes(key)) {
+      const valToMatch = match[key];
+      if (typeof value === "object" && value !== null) {
+        const [objMatch, objMatchKey, objMatchVal] = findObjMatch(value as JsonObj, valToMatch as JsonObj);
+        if (objMatch) {
+          matchKey = objMatchKey ? `${key}.${objMatchKey}` : key;
+          matchVal = objMatchVal;
+          return true;
+        }
+      } else if (valToMatch === "*" || value === valToMatch) {
+        matchKey = key;
+        matchVal = value;
+        return true;
       }
-      matchKey = key   
-      matchVal = value
-      return (valToMatch === '*') || (value === valToMatch)
     }
-    return false
-  })
-  return matchObj ? [obj, matchKey, matchVal] : [null,null,null]
+    return false;
+  });
+  return matchObj ? [obj, matchKey, matchVal] : [null, null, null]; //=
 }
+
 
 const matchesToPatch = [
   { match: {}, 
@@ -139,17 +157,17 @@ const matchesToPatch = [
       input_variables: { __patchFunc:'handlebars_to_array()' },
       tester: { __patchFunc:'yay_it({"foo":"boo"})' },
     }},
-  }
+  },
+  { match: {prompt:{template:'*'} }, 
+    patch: {input_key: { __patchFunc:'handlebars_to_array()' }},
+  },
 ] as Patch[]
 patchObjMatches(
-  { llm: {model_name: "text-davinci-003"}, prompt:{'template':'Answer questions as table rows, Q1:{q1}, Q2:{q2}, Q3:{q3}' }},
+  { llm: {model_name: "text-davinci-003"}, prompt:{'template':'YAY!Answer questions as table rows, Q1:{{q1}}, Q2:{{q2}}, Q3:{{q3}}' }},
   matchesToPatch
 ) //= 
 
-export function BaseSolver() {}
-export function SolverInputs() {}
 
-// test deNoise and reNoise
 // const noisyJson = JSON.parse(` 
 // {
 //   "memory": null,
