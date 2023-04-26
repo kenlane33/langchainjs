@@ -100,29 +100,28 @@ function mergeDeepOld(target: JsonObj, ...sources: JsonObj[]): JsonObj {
   return mergeDeepOld(target, ...sources);
 }
 
-function mergeDeep(target: JsonObj, ...sources: JsonObj[]): JsonObj {
-  return _mergeDeep(false, target, ...sources)
-}
-function mergeDeepNoStomp(target: JsonObj, ...sources: JsonObj[]): JsonObj {
-  return _mergeDeep(true, target, ...sources)
-}
-function _mergeDeep(blockStomp:boolean, target: JsonObj, ...sources: JsonObj[]): JsonObj {
+function _mergeDeep(canStomp:boolean, target: JsonObj, ...sources: JsonObj[]): JsonObj {
   if (!sources.length) return target
   const source = sources.shift()
   if (isObject(target) && source && isObject(source)) {    
     Object.keys(source).forEach(key => {
       if (isObject(source[key] as JsonObj)) {
         if (!(key in target)) Object.assign(target, { [key]: {} }) // add a place to merge into
-        _mergeDeep(blockStomp, target[key] as JsonObj, source[key] as JsonObj) // now merge into that place
-      } else if (!blockStomp || !(key in target)) { // check if target already has the key
+        _mergeDeep(canStomp, target[key] as JsonObj, source[key] as JsonObj) // now merge into that place
+      } else if (canStomp || !(key in target)) { // check if target already has the key
         Object.assign(target, { [key]: source[key] }) // add the key-value pair to target
       }
     })
   }
-  return _mergeDeep(blockStomp, target, ...sources)
+  return _mergeDeep(canStomp, target, ...sources)
 }
 
-
+function mergeDeep(target: JsonObj, ...sources: JsonObj[]): JsonObj {
+  return _mergeDeep(true, target, ...sources)
+}
+function mergeDeepNoStomp(target: JsonObj, ...sources: JsonObj[]): JsonObj {
+  return _mergeDeep(false, target, ...sources)
+}
 
 const a = {a:888, b:{u:222,v:7}}
 const b = {a:8, c:{p:1,q:1}}
@@ -131,30 +130,27 @@ const jj = (obj:JsonObj) => JSON.parse(JSON.stringify(obj))
 console.log(mergeDeep(jj(a), jj(b), jj(c))       )
 console.log(mergeDeepNoStomp(a, b, c)          )
 
-type Patch = {
-  match: JsonObj,
-  patch: JsonObj
-}
+type Patch = {match: JsonObj, patch: JsonObj}
 
-function patchObjsForPathMatches(target: JsonObj, matchesToPatch: Patch[]): JsonObj {
+function patchObjMatches(obj: JsonObj, matchesToPatch: Patch[]): JsonObj {
   for (const { match, patch } of matchesToPatch) {
-    const matchedObj = findObjMatchInsideObj(target, match);
+    const matchedObj = findObjMatch(obj, match);
     if (matchedObj) {
-      target = mergeDeepNoStomp(matchedObj, patch, JSON.parse(JSON.stringify(target)));
+      obj = mergeDeepNoStomp(matchedObj, patch, JSON.parse(JSON.stringify(obj)));
       // target = mergeDeep(matchedObj, patch, target);
     }
   }
-  return target;
+  return obj;
 }
 
-function findObjMatchInsideObj(obj: JsonObj, match: JsonObj): JsonObj | null {
+function findObjMatch(obj: JsonObj, match: JsonObj): JsonObj | null {
   const matchKeys = Object.keys(match) //= 
   if (matchKeys.length === 0) return obj // lets you match an empty object to any object
   const matchedObj = Object.entries(obj).find(([key, value]) => {
     if (matchKeys.includes(key)) { 
       const matchVal = match[key] //=
       if (typeof value === 'object' && value !== null) {
-        return findObjMatchInsideObj(value as JsonObj, matchVal as JsonObj) //= matchVal
+        return findObjMatch(value as JsonObj, matchVal as JsonObj) //= matchVal
       }
       return (matchVal === '*') || (value === matchVal) //= matchVal
     }
@@ -162,6 +158,7 @@ function findObjMatchInsideObj(obj: JsonObj, match: JsonObj): JsonObj | null {
   })
   return matchedObj ? obj : null;
 }
+
 const matchesToPatch = [
   { match: {}, 
     patch: {memory: null, verbose: false, output_key: 'answer'}
@@ -177,16 +174,30 @@ const matchesToPatch = [
   },
   { match: {prompt:{template:'*'} }, 
     patch: {prompt:{
-      "output_parser": null,
-      "template_format": "f-string",
-      "_type": "prompt"
+      output_parser: null,
+      template_format: 'f-string',
+      _type: 'prompt',
+      input_variables: {_transformFn:'handlebars_to_array()' },
     }},
   }
 ] as Patch[]
-patchObjsForPathMatches(
+patchObjMatches(
   { llm: {model_name: "text-davinci-003"}, prompt:{'template':'XX'}}, 
   matchesToPatch
 ) //=
+
+function handlebars_to_array(val: JsonValue) {
+  if (typeof val === 'string') {
+    const matches = val.matchAll(/{{\s*([a-zA-Z0-9_]+)\s*}}/g)
+    return [...matches].map(m => m[1])
+  }
+  return val
+}
+const transformFns = {
+  handlebars_to_array
+} as {[key:string]: (val:JsonValue) => JsonValue}
+
+// TODO: add a transform function to the patchObjMatches function
 
 // test deNoise and reNoise
 const noisyJson = JSON.parse(` 
