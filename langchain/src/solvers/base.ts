@@ -21,10 +21,11 @@ function _mergeDeep(canStomp:boolean, target: JsonObj, ...sources: JsonObj[]): J
   const source = sources.shift()
   if (isObject(target) && source && isObject(source)) {    
     Object.keys(source).forEach(key => {
+      const lacksKey = !(key in target)
       if (isObject(source[key] as JsonObj)) {
-        if (!(key in target)) Object.assign(target, { [key]: {} }) // add a place to merge into
+        if (lacksKey) Object.assign(target, { [key]: {} }) // add a place to merge into
         _mergeDeep(canStomp, target[key] as JsonObj, source[key] as JsonObj) // now merge into that place
-      } else if (canStomp || !(key in target)) { // check if target already has the key
+      } else if (canStomp || lacksKey) { // stomp is canStomp OR if target lacks this key
         Object.assign(target, { [key]: source[key] }) // add the key-value pair to target
       }
     })
@@ -52,19 +53,23 @@ type Patch = {match: JsonObj, patch: JsonObj}
 // type FullPatchFunc = (obj:JsonObj, key:string, val:JsonValue, match:JsonObj, patch:JsonObj, funcParams: JsonObj) => JsonObj
 type PatchFunc     = (val:JsonValue, funcParams?:JsonObj) => (JsonValue | JsonArray)
 
-function handlebars_to_array(val: JsonValue) : (JsonValue | JsonArray) {
+function curly_vars_first(val: JsonValue) : JsonValue {
+  return (curly_vars_to_array(val)?.[0] || '') as string
+}
+function curly_vars_to_array(val: JsonValue) : JsonArray {
   console.log(typeof val,val)
   if (typeof val === 'string') {
-    const matches = val.matchAll(/{{\s*([a-zA-Z0-9_]+)\s*}}/g)
+    const matches = val.matchAll(/{\s*([a-zA-Z0-9_]+)\s*}/g)
     return [...matches].map(m => m[1]) //=
   }
-  return `##${val}`
+  return []
 }
 function yay_it(val: JsonValue, funcParams: JsonObj) : (JsonValue | JsonArray) {
   return `YAY! ${JSON.stringify(funcParams)}  val was: ${JSON.stringify(val)}`
 }
 const patchFuncs = {
-  handlebars_to_array,
+  curly_vars_to_array,
+  curly_vars_first,
   yay_it
 } as {[key:string]: PatchFunc|null}
 // TODO: add a transform function to the patchObjMatches function
@@ -149,21 +154,22 @@ const matchesToPatch = [
       // presence_penalty: 0, n: 1, best_of: 1, request_timeout: null, logit_bias: {},
     }},
   },
-  { match: {prompt:{template:'*'} }, 
+  { match: {prompt:{template:'*'} }, // the value of  prompt.template  will be passed to the __patchFunc
     patch: {prompt:{
       output_parser: null,
       template_format: 'f-string',
       _type: 'prompt',
-      input_variables: { __patchFunc:'handlebars_to_array()' },
+      input_variables: { __patchFunc:'curly_vars_to_array()' },
       tester: { __patchFunc:'yay_it({"foo":"boo"})' },
     }},
   },
   { match: {prompt:{template:'*'} }, 
-    patch: {input_key: { __patchFunc:'handlebars_to_array()' }},
+    patch: {input_key: { __patchFunc:'curly_vars_first()' }},
   },
 ] as Patch[]
+
 patchObjMatches(
-  { llm: {model_name: "text-davinci-003"}, prompt:{'template':'YAY!Answer questions as table rows, Q1:{{q1}}, Q2:{{q2}}, Q3:{{q3}}' }},
+  { llm: {model_name: "text-davinci-003"}, prompt:{'template':'YAY!Answer questions as table rows, Q1:{q1}, Q2:{q2}, Q3:{q3}' }},
   matchesToPatch
 ) //= 
 
